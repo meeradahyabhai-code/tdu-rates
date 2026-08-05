@@ -1,0 +1,91 @@
+name: Sync TDU rates
+
+# Drop this into a repo that vendors tdsp_charges.csv. It opens a PR when the
+# canonical copy in tdu-rates moves. It never commits straight to main: a rate
+# change alters what the app tells people, so it gets a review and a preview deploy.
+#
+# Fires three ways:
+#   repository_dispatch  the push from tdu-rates, arrives within seconds
+#   schedule             a safety net in case the dispatch never lands
+#   workflow_dispatch    manual
+#
+# If tdu-rates is private, add a read token as a secret and send it with the curl:
+#   -H "Authorization: Bearer ${{ secrets.TDU_RATES_TOKEN }}"
+
+on:
+  repository_dispatch:
+    types: [tdu-rates-updated]
+  schedule:
+    - cron: "45 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CANONICAL: https://raw.githubusercontent.com/meeradahyabhai-code/tdu-rates/main/data/tdsp_charges.csv
+  LOCAL: data/static/tdsp_charges.csv
+  BRANCH: tdu-rates-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the canonical CSV
+        run: curl --fail-with-body -sSL "$CANONICAL" -o /tmp/canonical.csv
+
+      # A 404 page or a truncated download must never land on top of real rates.
+      - name: Sanity-check what we fetched
+        run: |
+          head -1 /tmp/canonical.csv | grep -qx 'utility,monthly,perKwh,startDate,endDate' \
+            || { echo "unexpected header:"; head -3 /tmp/canonical.csv; exit 1; }
+          lines=$(wc -l < /tmp/canonical.csv)
+          [ "$lines" -ge 100 ] || { echo "only $lines lines, expected 100+"; exit 1; }
+          for u in ONCOR CNP AEPCC AEPNC TNMP; do
+            grep -q "^$u," /tmp/canonical.csv || { echo "no $u rows"; exit 1; }
+          done
+          # the local file is the floor: syncing should never lose history
+          [ "$lines" -ge "$(wc -l < "$LOCAL")" ] || { echo "canonical is shorter than $LOCAL"; exit 1; }
+
+      - id: diff
+        name: Anything to sync
+        run: |
+          if cmp -s /tmp/canonical.csv "$LOCAL"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already current." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name  "tdu-rates sync"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          cp /tmp/canonical.csv "$LOCAL"
+
+          body=$(git diff --unified=0 -- "$LOCAL" | grep -E '^[+-][A-Z]' || true)
+          printf 'TDU rates: sync from tdu-rates\n\n%s\n' "$body" > /tmp/msg
+          git add "$LOCAL"
+          git commit -F /tmp/msg
+          git push --force-with-lease origin "$BRANCH"
+
+          {
+            echo "### TDU rates changed"
+            echo '```diff'
+            echo "$body"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$BRANCH" --title "TDU rates update" \
+              --body "$(printf 'Automatic sync of `%s` from [tdu-rates](https://github.com/meeradahyabhai-code/tdu-rates).\n\n```diff\n%s\n```\n\nSource: PUCT monthly TDU rate reports. Merge to deploy.\n' "$LOCAL" "$body")"
+          else
+            echo "existing PR updated"
+          fi

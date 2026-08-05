@@ -1,0 +1,49 @@
+{
+  "source": "https://www.puc.texas.gov/industry/electric/rates/tdr/",
+  "reports": "https://ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/",
+  "coverage": "Texas TDU residential delivery charges only",
+  "csvSha256": "01fae95cd5177ada844ae082f7b5435e61e4dad0f848864327a2a73140d23546",
+  "utilities": {
+    "ONCOR": {
+      "name": "Oncor Electric Delivery",
+      "monthlyCharge": 4.06,
+      "perKwh": 0.060295,
+      "startDate": "08/01/2026",
+      "endDate": "08/31/2026",
+      "expired": false
+    },
+    "CNP": {
+      "name": "CenterPoint Energy Houston Electric",
+      "monthlyCharge": 4.9,
+      "perKwh": 0.051461,
+      "startDate": "06/01/2026",
+      "endDate": "08/31/2026",
+      "expired": false
+    },
+    "AEPCC": {
+      "name": "AEP Texas Central",
+      "monthlyCharge": 3.24,
+      "perKwh": 0.057,
+      "startDate": "08/01/2026",
+      "endDate": "08/31/2026",
+      "expired": false
+    },
+    "AEPNC": {
+      "name": "AEP Texas North",
+      "monthlyCharge": 3.24,
+      "perKwh": 0.055,
+      "startDate": "08/01/2026",
+      "endDate": "08/31/2026",
+      "expired": false
+    },
+    "TNMP": {
+      "name": "Texas-New Mexico Power",
+      "monthlyCharge": 7.85,
+      "perKwh": 0.064665,
+      "startDate": "05/04/2026",
+      "endDate": "08/31/2026",
+      "expired": false
+    }
+  },
+  "expiredUtilities": []
+}

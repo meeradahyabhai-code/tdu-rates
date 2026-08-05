@@ -1,0 +1,117 @@
+name: Refresh TDU rates
+
+# Checks the PUCT every morning. Commits only when a rate actually moved, and
+# fails loudly rather than committing anything it could not verify.
+
+on:
+  schedule:
+    - cron: "15 13 * * *" # 08:15 America/Chicago (CDT), 07:15 CST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # Job-level so the notification steps can test them in `if:`. Absent secret
+    # means that channel is simply skipped; the commit is still the record.
+    env:
+      DISPATCH_TOKEN: ${{ secrets.CONSUMER_DISPATCH_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      RATES_WEBHOOK_URL: ${{ secrets.RATES_WEBHOOK_URL }}
+      CONSUMER_REPOS: ${{ vars.CONSUMER_REPOS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet -r requirements.txt
+
+      - name: Tests
+        run: python3 test_puc_tdu.py
+
+      - name: Pull the PUCT reports and update the CSV
+        run: python3 puc_tdu.py data/tdsp_charges.csv --apply
+
+      - name: Rebuild the published JSON
+        run: python3 scripts/emit_json.py
+
+      # The point of this job is that the CSV ends up matching the PUCT. Assert
+      # that outcome instead of trusting that the step above exited 0.
+      - name: Verify the CSV now matches the source
+        run: |
+          python3 puc_tdu.py data/tdsp_charges.csv
+          python3 scripts/emit_json.py --check
+
+      - name: Refuse to commit anything outside data/
+        run: |
+          stray=$(git diff --name-only -- . ':(exclude)data')
+          if [ -n "$stray" ]; then
+            echo "unexpected changes outside data/:"; echo "$stray"; exit 1
+          fi
+
+      - id: diff
+        name: Did anything change
+        run: |
+          if git diff --quiet -- data; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No rate change." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          changes=$(git diff --unified=0 -- data/tdsp_charges.csv | grep -E '^\+[A-Z]' | sed 's/^+//')
+          {
+            echo "CHANGES<<__EOF__"
+            echo "$changes"
+            echo "__EOF__"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### TDU rates changed"
+            echo '```'
+            echo "$changes"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - id: commit
+        name: Commit
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name  "tdu-rates bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data
+          printf 'TDU rates update\n\n%s\n' "$CHANGES" > /tmp/msg
+          git commit -F /tmp/msg
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # --- notifications ----------------------------------------------------
+
+      - name: Tell the consumer repos
+        if: steps.diff.outputs.changed == 'true' && env.DISPATCH_TOKEN != '' && env.CONSUMER_REPOS != ''
+        run: |
+          for repo in $CONSUMER_REPOS; do
+            echo "dispatching to $repo"
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer $DISPATCH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$repo/dispatches" \
+              -d '{"event_type":"tdu-rates-updated"}'
+          done
+
+      - name: Slack
+        if: steps.diff.outputs.changed == 'true' && env.SLACK_WEBHOOK_URL != ''
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/commit/${{ steps.commit.outputs.sha }}"
+          text=$(printf 'Texas TDU delivery rates changed\n\n%s\n\n%s' "$CHANGES" "$url")
+          jq -n --arg t "$text" '{text: $t}' \
+            | curl --fail-with-body -sS -X POST -H 'Content-type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Outgoing webhook
+        if: steps.diff.outputs.changed == 'true' && env.RATES_WEBHOOK_URL != ''
+        run: |
+          curl --fail-with-body -sS -X POST -H 'Content-type: application/json' \
+            --data-binary @data/tdu-rates.json "$RATES_WEBHOOK_URL"
