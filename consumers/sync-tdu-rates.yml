@@ -1,8 +1,13 @@
 name: Sync TDU rates
 
-# Drop this into a repo that vendors tdsp_charges.csv. It opens a PR when the
-# canonical copy in tdu-rates moves. It never commits straight to main: a rate
-# change alters what the app tells people, so it gets a review and a preview deploy.
+# Drop this into a repo that vendors tdsp_charges.csv. When the canonical copy in
+# tdu-rates moves, this commits it straight to main, which is what makes the new
+# rate deploy on its own.
+#
+# There is no review step by design. The gate is upstream: tdu-rates cross-checks
+# the PUCT rate report PDFs against the rates page, reconciles both against PUCT's
+# own published average bill, and refuses to publish anything that disagrees. The
+# realistic failure without this job is not a wrong rate, it is a stale one.
 #
 # Fires three ways:
 #   repository_dispatch  the push from tdu-rates, arrives within seconds
@@ -21,12 +26,14 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: tdu-rates-sync
+  cancel-in-progress: false
 
 env:
   CANONICAL: https://raw.githubusercontent.com/meeradahyabhai-code/tdu-rates/main/data/tdsp_charges.csv
   LOCAL: data/static/tdsp_charges.csv
-  BRANCH: tdu-rates-sync
 
 jobs:
   sync:
@@ -37,7 +44,9 @@ jobs:
       - name: Fetch the canonical CSV
         run: curl --fail-with-body -sSL "$CANONICAL" -o /tmp/canonical.csv
 
-      # A 404 page or a truncated download must never land on top of real rates.
+      # Committing straight to main means nobody eyeballs this first, so the
+      # checks below are the last line of defence. A 404 page or a truncated
+      # download must never land on top of real rates.
       - name: Sanity-check what we fetched
         run: |
           head -1 /tmp/canonical.csv | grep -qx 'utility,monthly,perKwh,startDate,endDate' \
@@ -60,32 +69,34 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open or update the PR
+      - name: Commit to main
         if: steps.diff.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name  "tdu-rates sync"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
           cp /tmp/canonical.csv "$LOCAL"
 
           body=$(git diff --unified=0 -- "$LOCAL" | grep -E '^[+-][A-Z]' || true)
           printf 'TDU rates: sync from tdu-rates\n\n%s\n' "$body" > /tmp/msg
           git add "$LOCAL"
           git commit -F /tmp/msg
-          git push --force-with-lease origin "$BRANCH"
+          git pull --rebase origin main
+          git push origin HEAD:main
 
           {
-            echo "### TDU rates changed"
+            echo "### TDU rates updated and deploying"
             echo '```diff'
             echo "$body"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --head "$BRANCH" --title "TDU rates update" \
-              --body "$(printf 'Automatic sync of `%s` from [tdu-rates](https://github.com/meeradahyabhai-code/tdu-rates).\n\n```diff\n%s\n```\n\nSource: PUCT monthly TDU rate reports. Merge to deploy.\n' "$LOCAL" "$body")"
-          else
-            echo "existing PR updated"
-          fi
+      # Confirm the rates that are live are the ones we just fetched, rather than
+      # trusting that git push exiting 0 means the file landed.
+      - name: Verify main now carries the new rates
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git fetch -q origin main
+          git show origin/main:"$LOCAL" > /tmp/on-main.csv
+          cmp -s /tmp/on-main.csv /tmp/canonical.csv \
+            || { echo "main does not match the canonical file after push"; exit 1; }
+          echo "main matches the canonical file"

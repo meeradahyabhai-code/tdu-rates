@@ -24,13 +24,13 @@ PUCT rates page (HTML) ──┘                                          │
                             ┌───────────────────────────────────────┼───────────────────────┐
                             ▼                                       ▼                       ▼
                   repository_dispatch                        Slack webhook          outgoing webhook
-                  → energy-xray  (PR)                        (optional)             (optional, JSON body)
-                  → should-i-switch (PR)
+                  → energy-xray  (commit → deploy)           (optional)             (optional, JSON body)
+                  → should-i-switch (commit → deploy)
                   → bill-check: ./sync-tdu.sh (local, not on GitHub)
 ```
 
-Nothing auto-merges. A rate change alters what these tools tell people, so each
-consumer gets a PR with the diff and a preview deploy.
+A rate change lands on main in each project and deploys itself. Everything that
+protects that is upstream of the commit, in the cross-checks below.
 
 ## Using it
 
@@ -50,7 +50,14 @@ source looked wrong and nothing was written.
 fires on the dispatch from here, on a daily cron as a backstop, and by hand. It
 verifies what it downloaded before touching anything: right header, at least 100
 rows, all five TDUs present, never shorter than the file it's replacing. Then it
-opens or updates a PR.
+commits straight to main, which is what makes the new rate deploy on its own, and
+re-reads main afterwards to confirm the file actually landed.
+
+There is no review step, by choice. The gate is the cross-checking here: two
+independent PUCT sources that must agree, reconciled against PUCT's own published
+average bill, and nothing gets written when they don't. The realistic failure mode
+without this job isn't a wrong rate, it's a stale one, which is what four months of
+hand-updating produced.
 
 **Not on GitHub** — `consumers/sync-tdu.sh ~/bill-check/data/tdsp_charges.csv`. Same
 checks, writes in place, prints the diff, idempotent.
