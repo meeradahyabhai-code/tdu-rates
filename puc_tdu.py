@@ -283,16 +283,19 @@ def latest(rows: list[dict], utility: str) -> dict | None:
 
 def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6):
     """Rows to close and rows to append. Nothing changes if the rates match."""
-    closes, adds, unchanged = [], [], []
+    closes, adds, unchanged, ahead = [], [], [], []
     for r in rates:
         cur = latest(rows, r.utility)
         new_kwh = f"{r.per_kwh:.{per_kwh_decimals}f}".rstrip("0")
         new_monthly = f"{r.monthly:.2f}"
+        if cur and _d(cur["startDate"]) > r.effective:
+            ahead.append((r, cur))
+            continue
         if cur and abs(float(cur["perKwh"]) - r.per_kwh) < 1e-9 \
                 and abs(float(cur["monthly"]) - r.monthly) < 0.005:
             unchanged.append((r, cur))
             continue
-        if cur and _d(cur["startDate"]) >= r.effective:
+        if cur and _d(cur["startDate"]) == r.effective:
             raise SystemExit(
                 f"{r.utility}: existing row starts {cur['startDate']} but the PUCT "
                 f"report is effective {_s(r.effective)}. Refusing to rewrite history.")
@@ -305,7 +308,7 @@ def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6)
             "startDate": _s(r.effective),
             "endDate": _s(season_end(r.effective)),
         })
-    return closes, adds, unchanged
+    return closes, adds, unchanged, ahead
 
 
 def apply_updates(path: str, closes, adds) -> None:
@@ -358,10 +361,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     rows = read_csv(a.csv)
-    closes, adds, unchanged = plan_updates(rows, rates)
+    closes, adds, unchanged, ahead = plan_updates(rows, rates)
     print()
     for r, cur in unchanged:
         print(f"  = {r.utility:6} unchanged ({cur['startDate']}-{cur['endDate']})")
+    for r, cur in ahead:
+        print(f"  ! {r.utility:6} ahead: kept ours {cur['startDate']} monthly "
+              f"${float(cur['monthly']):.2f} perKwh {float(cur['perKwh']):.6f}; "
+              f"report says {_s(r.effective)} monthly ${r.monthly:.2f} "
+              f"perKwh {r.per_kwh:.6f}")
     for cur, end in closes:
         print(f"  ~ close  {cur['utility']:6} {cur['startDate']}-{cur['endDate']} "
               f"-> endDate {end}  (was perKwh {cur['perKwh']})")
@@ -370,7 +378,10 @@ def main(argv: list[str]) -> int:
               f"{row['startDate']}-{row['endDate']}")
 
     if not adds:
-        print("\nNo change. CSV is current.")
+        if ahead:
+            print("\nNo updates to apply. Kept the newer CSV row(s) shown above.")
+        else:
+            print("\nNo change. CSV is current.")
         return 0
     if not a.apply:
         print(f"\n{len(adds)} row(s) to add. Dry run - rerun with --apply to write.")

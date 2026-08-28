@@ -35,7 +35,18 @@ jobs:
         run: python3 test_puc_tdu.py
 
       - name: Pull the PUCT reports and update the CSV
-        run: python3 puc_tdu.py data/tdsp_charges.csv --apply
+        run: |
+          set -o pipefail
+          python3 puc_tdu.py data/tdsp_charges.csv --apply | tee /tmp/puct-output
+          ahead=$(grep -E '^  ! ' /tmp/puct-output || true)
+          if [ -n "$ahead" ]; then
+            {
+              echo "### CSV rows ahead of the PUCT report"
+              echo '```'
+              echo "$ahead"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Rebuild the published JSON
         run: python3 scripts/emit_json.py
@@ -64,9 +75,13 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
           changes=$(git diff --unified=0 -- data/tdsp_charges.csv | grep -E '^\+[A-Z]' | sed 's/^+//')
+          ahead=$(grep -E '^  ! ' /tmp/puct-output || true)
           {
             echo "CHANGES<<__EOF__"
             echo "$changes"
+            echo "__EOF__"
+            echo "AHEAD<<__EOF__"
+            echo "$ahead"
             echo "__EOF__"
           } >> "$GITHUB_ENV"
           {
@@ -106,7 +121,7 @@ jobs:
         if: steps.diff.outputs.changed == 'true' && env.SLACK_WEBHOOK_URL != ''
         run: |
           url="https://github.com/$GITHUB_REPOSITORY/commit/${{ steps.commit.outputs.sha }}"
-          text=$(printf 'Texas TDU delivery rates changed\n\n%s\n\n%s' "$CHANGES" "$url")
+          text=$(printf 'Texas TDU delivery rates changed\n\n%s\n\nCSV rows ahead of PUCT (kept ours):\n%s\n\n%s' "$CHANGES" "$AHEAD" "$url")
           jq -n --arg t "$text" '{text: $t}' \
             | curl --fail-with-body -sS -X POST -H 'Content-type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 

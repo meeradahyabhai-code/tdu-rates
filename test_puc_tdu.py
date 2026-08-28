@@ -128,14 +128,15 @@ def _rate(util, monthly, kwh, eff, bill=None):
 def t_unchanged_is_a_noop():
     rates = [_rate("ONCOR", 4.06, 0.0611960, date(2026, 8, 1)),
              _rate("CNP", 4.90, 0.0514610, date(2026, 8, 1))]
-    closes, adds, unchanged = m.plan_updates(_rows(), rates)
+    closes, adds, unchanged, ahead = m.plan_updates(_rows(), rates)
     eq((closes, adds), ([], []))
     eq(len(unchanged), 2)
+    eq(ahead, [])
 
 
 def t_change_closes_and_appends():
     rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 8, 1))]
-    closes, adds, _ = m.plan_updates(_rows(), rates)
+    closes, adds, _, _ = m.plan_updates(_rows(), rates)
     eq(len(closes), 1)
     eq(closes[0][0]["startDate"], "06/01/2026", "closes the newest row, not the oldest: ")
     eq(closes[0][1], "07/31/2026")
@@ -145,14 +146,50 @@ def t_change_closes_and_appends():
 
 def t_monthly_only_change_still_counts():
     rates = [_rate("CNP", 5.10, 0.0514610, date(2026, 8, 1))]
-    closes, adds, _ = m.plan_updates(_rows(), rates)
+    closes, adds, _, _ = m.plan_updates(_rows(), rates)
     eq(adds[0]["monthly"], "5.10")
 
 
 def t_refuses_to_rewrite_history():
-    # a report dated on or before a row we already have means something is off
-    rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 6, 1))]
-    raises(lambda: m.plan_updates(_rows(), rates), "refusing to rewrite history")
+    # A strictly older report is expected lag and must leave our newer row alone.
+    rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 5, 1))]
+    closes, adds, unchanged, ahead = m.plan_updates(_rows(), rates)
+    eq((closes, adds, unchanged), ([], [], []))
+    eq(len(ahead), 1)
+    eq(ahead[0][1]["startDate"], "06/01/2026")
+
+
+def t_ahead_does_not_block_another_update():
+    rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 5, 1)),
+             _rate("CNP", 4.90, 0.049811, date(2026, 8, 1))]
+    closes, adds, unchanged, ahead = m.plan_updates(_rows(), rates)
+    eq(len(ahead), 1)
+    eq(ahead[0][0].utility, "ONCOR")
+    eq(len(closes), 1)
+    eq(adds[0]["utility"], "CNP")
+
+
+def t_newer_report_updates_ahead_row_normally():
+    rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 9, 1))]
+    closes, adds, unchanged, ahead = m.plan_updates(_rows(), rates)
+    eq(ahead, [])
+    eq(closes[0][1], "08/31/2026")
+    eq(adds[0]["startDate"], "09/01/2026")
+
+
+def t_main_exits_zero_for_ahead_only():
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)
+    original_fetch = m.fetch_all
+    try:
+        open(path, "w").write(CSV)
+        m.fetch_all = lambda strict=True: [
+            _rate("ONCOR", 4.06, 0.060295, date(2026, 5, 1))]
+        eq(m.main([path]), 0)
+        eq(open(path).read(), CSV)
+    finally:
+        m.fetch_all = original_fetch
+        os.unlink(path)
 
 
 def t_apply_touches_only_changed_lines():
@@ -162,7 +199,7 @@ def t_apply_touches_only_changed_lines():
         open(path, "w").write(CSV)
         rows = _rows()
         rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 8, 1))]
-        closes, adds, _ = m.plan_updates(rows, rates)
+        closes, adds, _, _ = m.plan_updates(rows, rates)
         m.apply_updates(path, closes, adds)
         before, after = CSV.splitlines(), open(path).read().splitlines()
         eq(after[:2], before[:2], "untouched lines rewritten: ")
@@ -181,11 +218,12 @@ def t_apply_is_idempotent():
     try:
         open(path, "w").write(CSV)
         rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 8, 1))]
-        closes, adds, _ = m.plan_updates(m.read_csv(path), rates)
+        closes, adds, _, _ = m.plan_updates(m.read_csv(path), rates)
         m.apply_updates(path, closes, adds)
         first = open(path).read()
-        closes2, adds2, unchanged2 = m.plan_updates(m.read_csv(path), rates)
+        closes2, adds2, unchanged2, ahead2 = m.plan_updates(m.read_csv(path), rates)
         eq((closes2, adds2), ([], []))
+        eq(ahead2, [])
         eq(open(path).read(), first)
     finally:
         os.unlink(path)
@@ -198,7 +236,7 @@ def t_apply_bails_on_ambiguous_line():
         open(path, "w").write(CSV + "ONCOR,4.06,0.0611960,06/01/2026,08/31/2026\n")
         rows = m.read_csv(path)
         rates = [_rate("ONCOR", 4.06, 0.060295, date(2026, 8, 1))]
-        closes, adds, _ = m.plan_updates(rows, rates)
+        closes, adds, _, _ = m.plan_updates(rows, rates)
         raises(lambda: m.apply_updates(path, closes, adds), "found 2")
     finally:
         os.unlink(path)
