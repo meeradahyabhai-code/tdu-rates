@@ -2,7 +2,7 @@
   "source": "https://www.puc.texas.gov/industry/electric/rates/tdr/",
   "reports": "https://ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/",
   "coverage": "Texas TDU residential delivery charges only",
-  "csvSha256": "2dae134f53e10f9496544a277db7a569bddd43a04133a69511dc484e18f64b54",
+  "csvSha256": "4a9b1607db3cf3b69f99a67dd75b9e8b20be4c6872864c228d5604391532d666",
   "utilities": {
     "ONCOR": {
       "name": "Oncor Electric Delivery",
@@ -10,40 +10,42 @@
       "perKwh": 0.060295,
       "startDate": "08/01/2026",
       "endDate": "08/31/2026",
-      "expired": false
+      "expired": true
     },
     "CNP": {
       "name": "CenterPoint Energy Houston Electric",
       "monthlyCharge": 4.9,
-      "perKwh": 0.049811,
-      "startDate": "08/15/2026",
-      "endDate": "08/31/2026",
+      "perKwh": 0.06413,
+      "startDate": "09/01/2026",
+      "endDate": "02/28/2027",
       "expired": false
     },
     "AEPCC": {
       "name": "AEP Texas Central",
       "monthlyCharge": 3.24,
-      "perKwh": 0.057,
-      "startDate": "08/01/2026",
-      "endDate": "08/31/2026",
+      "perKwh": 0.058,
+      "startDate": "09/01/2026",
+      "endDate": "02/28/2027",
       "expired": false
     },
     "AEPNC": {
       "name": "AEP Texas North",
       "monthlyCharge": 3.24,
-      "perKwh": 0.055,
-      "startDate": "08/01/2026",
-      "endDate": "08/31/2026",
+      "perKwh": 0.057,
+      "startDate": "09/01/2026",
+      "endDate": "02/28/2027",
       "expired": false
     },
     "TNMP": {
       "name": "Texas-New Mexico Power",
       "monthlyCharge": 7.85,
-      "perKwh": 0.064665,
-      "startDate": "05/04/2026",
-      "endDate": "08/31/2026",
+      "perKwh": 0.074022,
+      "startDate": "09/01/2026",
+      "endDate": "02/28/2027",
       "expired": false
     }
   },
-  "expiredUtilities": []
+  "expiredUtilities": [
+    "ONCOR"
+  ]
 }
