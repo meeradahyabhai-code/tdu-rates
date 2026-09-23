@@ -2,15 +2,15 @@
   "source": "https://www.puc.texas.gov/industry/electric/rates/tdr/",
   "reports": "https://ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/",
   "coverage": "Texas TDU residential delivery charges only",
-  "csvSha256": "4a9b1607db3cf3b69f99a67dd75b9e8b20be4c6872864c228d5604391532d666",
+  "csvSha256": "165a06757e9e2c8c8e916deaaf7e517e6661c040db7dfbb6da72d6821f2abec3",
   "utilities": {
     "ONCOR": {
       "name": "Oncor Electric Delivery",
       "monthlyCharge": 4.06,
       "perKwh": 0.060295,
       "startDate": "08/01/2026",
-      "endDate": "08/31/2026",
-      "expired": true
+      "endDate": "02/28/2027",
+      "expired": false
     },
     "CNP": {
       "name": "CenterPoint Energy Houston Electric",
@@ -45,7 +45,5 @@
       "expired": false
     }
   },
-  "expiredUtilities": [
-    "ONCOR"
-  ]
+  "expiredUtilities": []
 }
