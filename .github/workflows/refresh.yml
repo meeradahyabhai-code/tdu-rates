@@ -51,6 +51,13 @@ jobs:
       - name: Rebuild the published JSON
         run: python3 scripts/emit_json.py
 
+      - name: Assert no TDU is expired
+        run: >
+          python3 -c 'from datetime import date; import puc_tdu as p;
+          missing = p.uncovered(p.read_csv("data/tdsp_charges.csv"), date.today());
+          print("no expired TDUs" if not missing else "expired TDUs: " + ", ".join(missing));
+          raise SystemExit(1 if missing else 0)'
+
       # The point of this job is that the CSV ends up matching the PUCT. Assert
       # that outcome instead of trusting that the step above exited 0.
       - name: Verify the CSV now matches the source

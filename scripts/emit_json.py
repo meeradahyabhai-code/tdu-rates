@@ -46,21 +46,32 @@ def build(csv_path: str, today: date) -> dict:
     rows = m.read_csv(csv_path)
     digest = hashlib.sha256(open(csv_path, "rb").read()).hexdigest()
 
-    utilities, stale = {}, []
+    missing = m.uncovered(rows, today)
+    if missing:
+        details = []
+        for code in missing:
+            dated = [r for r in rows if r["utility"] == code
+                     and r["startDate"] and r["endDate"]]
+            if dated:
+                newest = max(dated, key=lambda r: m._d(r["startDate"]))
+                details.append(f"{code}: newest row ends {newest['endDate']}")
+            else:
+                details.append(f"{code}: no dated rows")
+        raise SystemExit("refusing to publish expired TDU rate(s):\n  "
+                         + "\n  ".join(details))
+
+    utilities = {}
     for code in m.UTILITIES:
         row = current_row(rows, code, today)
         if row is None:
             raise SystemExit(f"{code}: no dated rows in {csv_path}")
-        expired = m._d(row["endDate"]) < today
-        if expired:
-            stale.append(code)
         utilities[code] = {
             "name": NAMES[code],
             "monthlyCharge": float(row["monthly"]),
             "perKwh": float(row["perKwh"]),
             "startDate": row["startDate"],
             "endDate": row["endDate"],
-            "expired": expired,
+            "expired": False,
         }
 
     return {
@@ -69,7 +80,7 @@ def build(csv_path: str, today: date) -> dict:
         "coverage": "Texas TDU residential delivery charges only",
         "csvSha256": digest,
         "utilities": utilities,
-        "expiredUtilities": stale,
+        "expiredUtilities": [],
     }
 
 

@@ -276,14 +276,60 @@ def read_csv(path: str) -> list[dict]:
     return rows
 
 
+def uncovered(rows: list[dict], today: date) -> list[str]:
+    """Texas TDUs with no row in force on `today`. Must always be empty."""
+    missing = []
+    for utility in UTILITIES:
+        covered = any(
+            row["utility"] == utility
+            and row["startDate"]
+            and row["endDate"]
+            and _d(row["startDate"]) <= today <= _d(row["endDate"])
+            for row in rows
+        )
+        if not covered:
+            missing.append(utility)
+    return missing
+
+
+def projected(rows, closes, adds, extends) -> list[dict]:
+    """Return the CSV rows after applying a plan, without mutating `rows`."""
+    end_dates = {id(row): end for row, end in [*closes, *extends]}
+    result = [dict(row, endDate=end_dates.get(id(row), row["endDate"]))
+              for row in rows]
+    result.extend(dict(row) for row in adds)
+    return result
+
+
 def latest(rows: list[dict], utility: str) -> dict | None:
     hits = [r for r in rows if r["utility"] == utility]
     return max(hits, key=lambda r: _d(r["startDate"])) if hits else None
 
 
+def _coverage_failure(rows: list[dict], today: date) -> SystemExit | None:
+    """Explain any uncovered Texas TDUs in a form suitable for a hard failure."""
+    missing = uncovered(rows, today)
+    if not missing:
+        return None
+    details = []
+    for utility in missing:
+        dated = [row for row in rows if row["utility"] == utility
+                 and row["startDate"] and row["endDate"]]
+        if dated:
+            newest = max(dated, key=lambda row: _d(row["startDate"]))
+            details.append(f"{utility}: newest row ends {newest['endDate']}")
+        else:
+            details.append(f"{utility}: no dated rows")
+    return SystemExit(
+        "UNCOVERED TDU RATE(S), refusing to write:\n  "
+        + "\n  ".join(details)
+        + "\nThe rate could not be extended or appended from the PUCT report; "
+        "a human has to look.")
+
+
 def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6):
-    """Rows to close and rows to append. Nothing changes if the rates match."""
-    closes, adds, unchanged, ahead = [], [], [], []
+    """Rows to close, append, or extend without duplicating an unchanged rate."""
+    closes, adds, unchanged, ahead, extends = [], [], [], [], []
     for r in rates:
         cur = latest(rows, r.utility)
         new_kwh = f"{r.per_kwh:.{per_kwh_decimals}f}".rstrip("0")
@@ -293,7 +339,11 @@ def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6)
             continue
         if cur and abs(float(cur["perKwh"]) - r.per_kwh) < 1e-9 \
                 and abs(float(cur["monthly"]) - r.monthly) < 0.005:
-            unchanged.append((r, cur))
+            end = _s(season_end(r.effective))
+            if _d(cur["endDate"]) < _d(end):
+                extends.append((cur, end))
+            else:
+                unchanged.append((r, cur))
             continue
         if cur and _d(cur["startDate"]) == r.effective:
             raise SystemExit(
@@ -308,10 +358,10 @@ def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6)
             "startDate": _s(r.effective),
             "endDate": _s(season_end(r.effective)),
         })
-    return closes, adds, unchanged, ahead
+    return closes, adds, unchanged, ahead, extends
 
 
-def apply_updates(path: str, closes, adds) -> None:
+def apply_updates(path: str, closes, adds, extends=()) -> None:
     """Edit in place at the line level so untouched rows stay byte-identical.
 
     The file is version-controlled and shipped, so the diff should show only the
@@ -321,7 +371,7 @@ def apply_updates(path: str, closes, adds) -> None:
         lines = f.read().splitlines(keepends=True)
     term = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
 
-    for target, end in closes:
+    for target, end in [*closes, *extends]:
         old = ",".join(target[k] for k in FIELDS)
         hits = [i for i, ln in enumerate(lines) if ln.rstrip("\r\n") == old]
         if len(hits) != 1:
@@ -342,9 +392,12 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("csv", nargs="?", help="tdsp_charges.csv to check or update")
     p.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+    p.add_argument("--today", help="MM/DD/YYYY, for coverage testing")
     p.add_argument("--no-strict", action="store_true",
                    help="warn instead of failing when the two PUCT sources disagree")
     a = p.parse_args(argv)
+
+    today = _d(a.today) if a.today else date.today()
 
     rates = fetch_all(strict=not a.no_strict)
     print(f"PUCT residential TDU rates, effective {_s(rates[0].effective)}\n")
@@ -361,7 +414,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     rows = read_csv(a.csv)
-    closes, adds, unchanged, ahead = plan_updates(rows, rates)
+    closes, adds, unchanged, ahead, extends = plan_updates(rows, rates)
     print()
     for r, cur in unchanged:
         print(f"  = {r.utility:6} unchanged ({cur['startDate']}-{cur['endDate']})")
@@ -373,21 +426,33 @@ def main(argv: list[str]) -> int:
     for cur, end in closes:
         print(f"  ~ close  {cur['utility']:6} {cur['startDate']}-{cur['endDate']} "
               f"-> endDate {end}  (was perKwh {cur['perKwh']})")
+    for cur, end in extends:
+        print(f"  > extend {cur['utility']:6} {cur['startDate']}-{cur['endDate']} "
+              f"-> endDate {end}  (rate unchanged at {float(cur['perKwh']):.6f})")
     for row in adds:
         print(f"  + add    {row['utility']:6} {row['monthly']} {row['perKwh']} "
               f"{row['startDate']}-{row['endDate']}")
 
-    if not adds:
+    failure = _coverage_failure(projected(rows, closes, adds, extends), today)
+    if failure:
+        raise failure
+
+    if not adds and not extends:
         if ahead:
             print("\nNo updates to apply. Kept the newer CSV row(s) shown above.")
         else:
             print("\nNo change. CSV is current.")
         return 0
     if not a.apply:
-        print(f"\n{len(adds)} row(s) to add. Dry run - rerun with --apply to write.")
+        print(f"\n{len(adds)} row(s) to add, {len(extends)} row(s) to extend. "
+              "Dry run - rerun with --apply to write.")
         return 2
-    apply_updates(a.csv, closes, adds)
-    print(f"\nWrote {a.csv}: {len(closes)} closed, {len(adds)} added.")
+    apply_updates(a.csv, closes, adds, extends)
+    failure = _coverage_failure(read_csv(a.csv), today)
+    if failure:
+        raise failure
+    print(f"\nWrote {a.csv}: {len(closes)} closed, {len(adds)} added, "
+          f"{len(extends)} extended.")
     return 0
 
 
