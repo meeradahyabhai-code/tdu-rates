@@ -6,7 +6,15 @@ Run: python3 test_puc_tdu.py
 import os
 import sys
 import tempfile
+import io
+import re
+import subprocess
+from contextlib import redirect_stdout
 from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+import requests
 
 import puc_tdu as m
 
@@ -53,7 +61,10 @@ failures = []
 
 def check(name, fn):
     try:
-        fn()
+        # A missed mock must never turn the offline suite into a network test.
+        with patch.object(m, "_get", side_effect=AssertionError("unexpected network access")), \
+             patch.object(m, "fetch_txu", return_value=[]), redirect_stdout(io.StringIO()):
+            fn()
         print(f"  ok   {name}")
     except (Exception, SystemExit) as e:  # SystemExit is how the module bails
         failures.append(name)
@@ -449,6 +460,246 @@ def t_derived_per_kwh_flags_rounding():
     eq(r.derived_per_kwh, 0.0569)
     exact = _rate("TNMP", 7.85, 0.064665, date(2026, 8, 1), bill=72.52)
     assert abs(exact.derived_per_kwh - exact.per_kwh) < 1.1e-5, "false rounding flag"
+
+
+# --- TXU layout fixtures and source arbitration -------------------------
+
+FIXTURES = Path(__file__).parent / "tests/fixtures"
+TXU_TEXT = (FIXTURES / "txu_20260828_res_layout.txt").read_text()
+TXU_OCT_TEXT = (FIXTURES / "txu_20261004_res_layout.txt").read_text()
+FETCH_TXU = m.fetch_txu
+
+
+def _assert_txu_tables(text, expected):
+    rates = m.parse_txu_text(text)
+    eq(len(rates), 6 * len(expected))
+    eq({r.effective for r in rates}, set(expected))
+    for effective, values in expected.items():
+        table = [r for r in rates if r.effective == effective]
+        eq([r.utility for r in table], ["ONCOR", "CNP", "AEPCC", "AEPNC", "TNMP", "LUBBOCK"])
+        eq([(r.monthly, r.per_kwh) for r in table], values, str(effective))
+
+
+def t_txu_august_all_six_values_in_both_tables():
+    _assert_txu_tables(TXU_TEXT, {
+        date(2026, 8, 28): [(4.06, .060295), (4.90, .049811), (3.24, .057824),
+                            (3.24, .056677), (7.85, .064665), (0, .063120)],
+        date(2026, 8, 15): [(4.06, .060295), (4.90, .049811), (3.24, .058272),
+                            (3.24, .056677), (7.85, .064665), (0, .063120)],
+    })
+
+
+def t_txu_october_all_six_values_in_both_tables():
+    _assert_txu_tables(TXU_OCT_TEXT, {
+        date(2026, 10, 4): [(4.06, .068673), (4.90, .064130), (3.24, .056898),
+                            (3.24, .055751), (7.56, .077710), (0, .063120)],
+        date(2026, 9, 29): [(4.06, .060295), (4.90, .064130), (3.24, .056898),
+                            (3.24, .055751), (7.56, .077710), (0, .063120)],
+    })
+
+
+def t_txu_column_swap_is_rejected_including_older_table():
+    for text in (TXU_TEXT, TXU_OCT_TEXT):
+        lines = text.splitlines(keepends=True)
+        titles = [i for i, line in enumerate(lines) if "(Total Per Month" in line]
+        for title_i in titles:
+            swapped = lines.copy()
+            end_i = next(i for i in range(title_i, len(lines)) if "Total TDU Charges Per Month:" in lines[i])
+            dollars = [x.start() for x in re.finditer(r"\$", lines[end_i])]
+            left = dollars[0] - (dollars[1] - dollars[0]) // 2
+            middle, right = (dollars[0] + dollars[1]) // 2, (dollars[1] + dollars[2]) // 2
+            # Move complete wrapped header cells, preserving the numeric ruler.
+            header_end = next(i for i in range(title_i + 1, end_i)
+                              if "TDU Delivery Charges Per Month:" in lines[i])
+            for i in range(title_i + 1, header_end):
+                raw = lines[i].rstrip("\n").ljust(right)
+                first, second = raw[left:middle].strip(), raw[middle:right].strip()
+                swapped[i] = raw[:left] + second.center(middle-left) + first.center(right-middle) + raw[right:] + "\n"
+            raises(lambda: m.parse_txu_text("".join(swapped)), "unexpected utility order")
+    raises(lambda: m.parse_txu_text(TXU_TEXT.replace("AEP TEXAS", "AEP      ", 1)), "expected utility")
+
+
+def t_txu_six_value_guard_and_missing_older_rows():
+    for text in (TXU_TEXT, TXU_OCT_TEXT):
+        for label in ("Total TDU Charges Per Month:", "Total TDU Charges Per kWh:"):
+            lines = text.splitlines()
+            indices = [i for i, line in enumerate(lines) if label in line]
+            for i in indices:
+                bad = lines.copy()
+                bad[i] = re.sub(r"\s+\S+\s*$", "", bad[i])
+                raises(lambda: m.parse_txu_text("\n".join(bad)), "expected 6")
+                bad = lines.copy()
+                del bad[i]
+                raises(lambda: m.parse_txu_text("\n".join(bad)), "row" if "kWh" in label else "ruler")
+
+
+def t_txu_pdf_discovery_and_layout_extraction():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    url = "https://www.txu.com/-/media/changed_RES_WEB_OCT04_2026.pdf"
+    html = '<a href="/-/media/changed_RES_WEB_OCT04_2026.pdf">rates</a>'
+    eq(m._txu_pdf_url(html), url)
+    raises(lambda: m._txu_pdf_url("<p>missing</p>"), "exactly one")
+    raises(lambda: m._txu_pdf_url(html + html.replace("changed", "another")), "exactly one")
+    page = Mock()
+    page.extract_text.return_value = TXU_OCT_TEXT
+    with patch.object(m, "_get", side_effect=[SimpleNamespace(text=html), SimpleNamespace(content=b"pdf")]) as get, \
+         patch.object(m, "PdfReader", return_value=SimpleNamespace(pages=[page])):
+        rates = FETCH_TXU()
+    eq([c.args[0] for c in get.call_args_list], [m.TXU_PAGE_URL, url])
+    page.extract_text.assert_called_once_with(extraction_mode="layout")
+    eq(len(rates), 12)
+    assert all(r.source == url for r in rates)
+
+
+def t_source_newest_wins_both_directions_and_input_orders():
+    puct = [_rate("CNP", 4.90, .065333, date(2026, 10, 1)),
+            _rate("ONCOR", 4.06, .070000, date(2026, 10, 5))]
+    txu = m.parse_txu_text(TXU_OCT_TEXT)
+    for candidates in (txu, list(reversed(txu))):
+        merged, _ = m.merge_sources(puct, candidates)
+        chosen = {r.utility: r for r in merged}
+        eq(chosen["CNP"].per_kwh, .064130)
+        eq(chosen["CNP"].effective, date(2026, 10, 4))
+        eq(chosen["ONCOR"], puct[1])
+
+
+def t_same_date_conflict_in_older_table_is_not_hidden():
+    puct = [_rate("CNP", 4.90, .065333, date(2026, 9, 29))]
+    raises(lambda: m.merge_sources(puct, m.parse_txu_text(TXU_OCT_TEXT)), "SOURCE CONFLICT")
+    rates = m.parse_txu_text(TXU_OCT_TEXT)
+    raises(lambda: m.merge_sources([], rates + [_rate("ONCOR", 99, .068673, date(2026, 10, 4))]), "SOURCE CONFLICT")
+
+
+def t_equal_date_equal_values_report_both_sources():
+    rate = _rate("CNP", 4.90, .064130, date(2026, 10, 4))
+    merged, agreements = m.merge_sources([rate], [rate])
+    eq(merged, [rate])
+    eq(agreements, ["CNP"])
+
+
+def t_csv_same_date_conflict_cannot_hide_behind_newer_candidate():
+    rows = _rows()
+    old = _rate("ONCOR", 4.23, .099999, date(2026, 3, 1))
+    new = _rate("ONCOR", 4.06, .068673, date(2026, 10, 4))
+    raises(lambda: m.validate_csv_sources([old, new], rows), "SOURCE CONFLICT")
+    old.per_kwh = .056183
+    m.validate_csv_sources([old, new], rows)
+
+
+def t_same_date_conflict_cli_exits_nonzero_and_writes_nothing():
+    path = _temp_csv(COVERED_CSV)
+    try:
+        before = Path(path).read_bytes()
+        script = '''
+import sys
+from datetime import date
+from unittest.mock import patch
+import puc_tdu as m
+r = m.Rate("CNP", 4.90, .065333, date(2026, 10, 4), 70.233, "PUCT")
+t = m.Rate("CNP", 4.90, .064130, date(2026, 10, 4), 69.030, "TXU")
+with patch.object(m, "fetch_all", return_value=[r]), patch.object(m, "fetch_txu", return_value=[t]):
+    raise SystemExit(m.main([sys.argv[1], "--no-strict"]))
+'''
+        result = subprocess.run([sys.executable, "-c", script, path], cwd=Path(__file__).parent,
+                                capture_output=True, text=True)
+        eq(result.returncode, 1)
+        assert "SOURCE CONFLICT" in result.stderr, result.stderr
+        eq(Path(path).read_bytes(), before)
+    finally:
+        os.unlink(path)
+
+
+def t_txu_unreachable_falls_back_visibly():
+    path = _temp_csv(COVERED_CSV.replace("08/31/2026", "02/28/2027", 1))
+    try:
+        for error in (requests.Timeout("timeout"), requests.ConnectionError("offline"), requests.HTTPError("503")):
+            out = io.StringIO()
+            with patch.object(m, "fetch_all", return_value=[_rate("ONCOR", 4.06, .061196, date(2026, 9, 1))]), \
+                 patch.object(m, "fetch_txu", side_effect=error), redirect_stdout(out):
+                eq(m.main([path, "--today", "10/06/2026"]), 0)
+            assert "TXU unreachable; falling back to PUCT alone" in out.getvalue()
+        eq(Path(path).read_text(), COVERED_CSV.replace("08/31/2026", "02/28/2027", 1))
+    finally:
+        os.unlink(path)
+
+
+def t_txu_parse_failure_does_not_fall_back():
+    with patch.object(m, "fetch_all", return_value=[]), \
+         patch.object(m, "fetch_txu", side_effect=ValueError("layout changed")):
+        raises(lambda: m.main([]), "layout changed")
+
+
+def t_txu_sanity_checks_each_table():
+    good = _rate("ONCOR", 4.06, .061196, date(2026, 8, 28))
+    m.validate_txu_sanity([good], _rows())
+    bad = _rate("ONCOR", 99.99, .999999, date(2026, 8, 15))
+    raises(lambda: m.validate_txu_sanity([good, bad], _rows()), "sanity check failed")
+
+
+def t_october_fixture_plan_preserves_coverage_and_csv_history():
+    import csv
+    rows = list(csv.DictReader(io.StringIO("""utility,monthly,perKwh,startDate,endDate
+ONCOR,4.06,0.060295,08/01/2026,02/28/2027
+CNP,4.90,0.065333,10/01/2026,02/28/2027
+AEPCC,3.24,0.057,10/01/2026,02/28/2027
+AEPNC,3.24,0.056,10/01/2026,02/28/2027
+TNMP,7.56,0.07771,10/01/2026,02/28/2027
+LUBBOCK,0.00,0.063120,09/01/2025,08/31/2026
+""")))
+    # Freeze the October 6 CSV state so this test survives future refreshes.
+    puct = [_rate(code, float(cur["monthly"]), float(cur["perKwh"]), m._d(cur["startDate"]))
+            for code in m.UTILITIES for cur in [m.latest(rows, code)]]
+    txu = m.parse_txu_text(TXU_OCT_TEXT)
+    merged, _ = m.merge_sources(puct, txu)
+    m.validate_txu_sanity(txu, rows)
+    closes, adds, _, _, extends = m.plan_updates(rows, merged)
+    by_code = {r["utility"]: r for r in adds}
+    eq(by_code["ONCOR"]["startDate"], "10/04/2026")
+    eq(by_code["ONCOR"]["perKwh"], "0.068673")
+    eq(by_code["CNP"]["startDate"], "10/04/2026")
+    eq(by_code["CNP"]["perKwh"], "0.064130")
+    assert all(end == "10/03/2026" for _, end in closes)
+    eq(extends, [(m.latest(rows, "LUBBOCK"), "02/28/2027")])
+    after = m.projected(rows, closes, adds, extends)
+    eq(m.uncovered(after, date(2026, 10, 6)), [])
+    # The verification step must be a no-op against the merged result.
+    closes2, adds2, _, ahead2, extends2 = m.plan_updates(after, merged)
+    eq((closes2, adds2, ahead2, extends2), ([], [], [], []))
+    contents = ",".join(m.FIELDS) + "\n" + "\n".join(",".join(row[k] for k in m.FIELDS) for row in rows) + "\n"
+    path = _temp_csv(contents)
+    try:
+        out = io.StringIO()
+        with patch.object(m, "fetch_all", return_value=puct), \
+             patch.object(m, "fetch_txu", return_value=txu), redirect_stdout(out):
+            eq(m.main([path, "--today", "10/06/2026"]), 2)
+        additions = [line for line in out.getvalue().splitlines() if line.startswith("  + add")]
+        eq(len(additions), 4)
+        assert all(line.endswith("[TXU]") for line in additions)
+        eq(Path(path).read_text(), contents)
+    finally:
+        os.unlink(path)
+
+
+def t_txu_precision_is_not_rounded_to_six_decimals():
+    rate = _rate("ONCOR", 4.06, .06867345, date(2026, 10, 4))
+    _, adds, _, _, _ = m.plan_updates(_rows(), [rate])
+    eq(adds[0]["perKwh"], "0.06867345")
+
+
+def t_puct_different_dates_are_normal_but_same_date_conflicts_are_fatal():
+    r = _rate("ONCOR", 4.06, .060295, date(2026, 10, 1))
+    html = {"ONCOR": {"monthly": 4.06, "per_kwh": .068673, "bill_1000": 72.733}}
+    with patch.object(m, "UTILITIES", {"ONCOR": m.UTILITIES["ONCOR"]}), \
+         patch.object(m, "parse_pdf", return_value=r):
+        with patch.object(m, "parse_html", return_value=(html, date(2026, 10, 4))):
+            merged, _ = m.merge_sources(m.fetch_all(), [])
+            eq(merged[0].per_kwh, .068673)
+        with patch.object(m, "parse_html", return_value=(html, r.effective)):
+            raises(lambda: m.fetch_all(strict=False), "SOURCE DISAGREEMENT")
+        html["ONCOR"]["bill_1000"] = 999
+        with patch.object(m, "parse_html", return_value=(html, date(2026, 10, 4))):
+            raises(lambda: m.fetch_all(strict=False), "doesn't reconcile")
 
 
 if __name__ == "__main__":

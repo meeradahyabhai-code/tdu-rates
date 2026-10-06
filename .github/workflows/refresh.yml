@@ -1,6 +1,6 @@
 name: Refresh TDU rates
 
-# Checks the PUCT every morning. Commits only when a rate actually moved, and
+# Checks PUCT and TXU every morning. Commits only when a rate actually moved, and
 # fails loudly rather than committing anything it could not verify.
 
 on:
@@ -34,19 +34,20 @@ jobs:
       - name: Tests
         run: python3 test_puc_tdu.py
 
-      - name: Pull the PUCT reports and update the CSV
+      - name: Pull PUCT and TXU and update the CSV
         run: |
           set -o pipefail
-          python3 puc_tdu.py data/tdsp_charges.csv --apply | tee /tmp/puct-output
-          ahead=$(grep -E '^  ! ' /tmp/puct-output || true)
-          if [ -n "$ahead" ]; then
+          summarize() {
             {
-              echo "### CSV rows ahead of the PUCT report"
-              echo '```'
-              echo "$ahead"
+              echo "### PUCT + TXU rate update (source shown for each row)"
+              echo
+              echo '```text'
+              cat /tmp/tdu-output
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          }
+          trap summarize EXIT
+          python3 puc_tdu.py data/tdsp_charges.csv --apply 2>&1 | tee /tmp/tdu-output
 
       - name: Rebuild the published JSON
         run: python3 scripts/emit_json.py
@@ -58,7 +59,7 @@ jobs:
           print("no expired TDUs" if not missing else "expired TDUs: " + ", ".join(missing));
           raise SystemExit(1 if missing else 0)'
 
-      # The point of this job is that the CSV ends up matching the PUCT. Assert
+      # The CSV must match the merged PUCT + TXU result. Assert
       # that outcome instead of trusting that the step above exited 0.
       - name: Verify the CSV now matches the source
         run: |
@@ -82,7 +83,7 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
           changes=$(git diff --unified=0 -- data/tdsp_charges.csv | grep -E '^\+[A-Z]' | sed 's/^+//')
-          ahead=$(grep -E '^  ! ' /tmp/puct-output || true)
+          ahead=$(grep -E '^  ! ' /tmp/tdu-output || true)
           {
             echo "CHANGES<<__EOF__"
             echo "$changes"

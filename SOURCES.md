@@ -8,6 +8,18 @@ because the behaviour is not what you would guess and it is not stable.
 
 **The latest effective date wins. No source outranks another.**
 
+The daily job reads **PUCT AND TXU**, applies their merged result, and verifies the
+CSV against that same merged path. Each proposed new row's source appears in the
+console output and GitHub Actions summary. TXU's dated residential PDF link is
+discovered from its page on every run; every dated table is parsed and validated
+in layout mode, including prior tables. After checking all dates for conflicts,
+the latest effective date is selected per utility. The CSV schema is unchanged.
+
+If TXU is unreachable (connection, timeout, or HTTP error), the job falls back to
+PUCT and says so in the output and summary. A malformed TXU sheet or a same-date
+conflict fails closed instead. TXU also covers LUBBOCK; PUCT covers the five TDUs
+listed in the coverage invariant below.
+
 | Source | Where | Character |
 |---|---|---|
 | **PUCT** | `puc.texas.gov/industry/electric/rates/tdr/` + the four rate-report PDFs | Authoritative record. Usually lags interim changes. |
@@ -116,7 +128,7 @@ Meera, 2026-09-04:
 Every one of the five Texas TDUs must have a row in force **today**, always. There are
 exactly two ways to keep that true, and both are automatic:
 
-| The PUCT report says | What happens |
+| The newest PUCT or TXU rate says | What happens |
 |---|---|
 | Same charges, newer effective date | **Extend** the existing row's `endDate` to the new season end. No duplicate row. |
 | Different charges | **Close** the current row the day before, **append** a new one. |
@@ -151,19 +163,21 @@ to distrust is any code path that treats "nothing to do" as "nothing is wrong."
 
 ## What refuses to write
 
-- The two published sources disagree on a charge or an effective date **for the same
-  date**
+- Published sources disagree on charges **for the same effective date**, including
+  an older table in the TXU PDF
 - PUCT's own published average 1,000 kWh bill does not reconcile with the charges on
   the same report
 - A report's layout changed enough that a row is missing, duplicated, or has the
   wrong column count
-- The effective date is on or before a row already in the CSV — that is rewriting
-  history, not appending to it
+- A source has different charges for the same effective date as the CSV row —
+  that is rewriting history, not appending to it. Older source dates are normal lag;
+  newer CSV rows are kept and reported.
 - No utility on a new TXU sheet matches any rate already on file (sanity check)
 - Any Texas TDU would be left with no row in force today, and the report gives no way to
   extend or append one
 
-`--no-strict` downgrades the first to a warning. Nothing downgrades the rest.
+`--no-strict` is a deprecated compatibility flag. It no longer downgrades any
+validation: same-date conflicts always fail closed, write nothing, and exit non-zero.
 
 ## The manual exception
 

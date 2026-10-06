@@ -1,0 +1,67 @@
+                                                                             TDU Delivery Charges  (Total Per Month & Total Per kWh by TDU)
+                                                                                                                                           TEXAS -         LUBBOCK
+TDU Delivery Charges:                                            ONCOR          CENTERPOINT           AEP TEXAS        AEP TEXAS             NEW         POWER AND
+Updated October 4, 2026                                                             ENERGY            CENTRAL1            NORTH            MEXICO
+                                                                                                                                           POWER             LIGHT
+
+                                                                 TDU Delivery Charges Per Month:
+Customer Charge                                                    $1.48              $2.11               $1.27            $1.27             $1.70            $0.00
+Metering Charge                                                    $2.58              $2.79               $1.97            $1.97             $5.86            $0.00
+                       Total TDU Charges Per Month:               $4.06               $4.90              $3.24             $3.24            $7.56             $0.00
+                                                                  TDU Delivery Charges Per kWh
+Interim Surcharge (IS)                                           0.36330¢             0.00¢               0.00¢            0.00¢             0.00¢            0.00¢
+Distribution System Charge                                       3.60430¢           2.32400¢           3.29660¢          3.29660¢         4.60200¢          5.62800¢
+Franchise Fee                                                      0.00¢              0.00¢               0.00¢            0.00¢             0.00¢          0.51700¢
+Nuclear Decommissioning Fee                                        0.00¢            0.00130¢              0.00¢            0.00¢             0.00¢            0.00¢
+Transmission Cost Recovery Factor (TCRF)                         2.16690¢           3.08120¢           1.71940¢          1.71940¢         2.89860¢            0.00¢
+Distribution Cost Recovery Factory (DCRF)                        0.57550¢           0.49340¢           0.36600¢          0.36600¢            0.00¢            0.00¢
+Temporary Emergency Electric Energy Facilities
+(TEEEF)                                                            0.00¢            0.07420¢           0.08300¢          0.08300¢            0.00¢            0.00¢
+Transition Charge                                                  0.00¢              0.00¢               0.00¢            0.00¢             0.00¢          0.16700¢
+Transition Charge (TC5)                                            0.00¢            -0.02780¢             0.00¢            0.00¢             0.00¢            0.00¢
+Rate Case Expense (RCE)                                          0.00860¢           0.00480¢              0.00¢            0.00¢             0.02¢            0.00¢
+System Restoration Charge (SRC) II                                 0.00¢            0.06360¢           0.12170¢            0.00¢             0.00¢            0.00¢
+Adjusted Federal Income Tax Credit (ADFIT) II                      0.00¢            -0.00230¢          -0.00700¢           0.00¢             0.00¢            0.00¢
+System Restoration Charge (SRC) III                                0.00¢            0.28480¢              0.00¢            0.00¢             0.00¢            0.00¢
+Adjusted Federal Income Tax Credit (ADFIT) III                     0.00¢            -0.04180¢             0.00¢            0.00¢             0.00¢            0.00¢
+Energy Efficiency Cost Recovery Factor (EECRF)                   0.14870¢           0.15760¢           0.11010¢          0.11010¢         0.16420¢            0.00¢
+Hurricane Cost Recovery Factor (HCRF)                              0.00¢              0.00¢               0.00¢            0.00¢          0.08820¢            0.00¢
+                          Total TDU Charges Per kWh:             6.86730¢           6.41300¢           5.68980¢          5.57510¢         7.77100¢          6.31200¢
+Note(s)
+1 McAllen and Mission service area customers formerly served by Oncor will not be subject to the following AEP Central TDU Surcharges:  Transition Charges 2 & 3, Nuclear
+Decommissioning Fee, System Restoration Charge and associate Accumulated Deferred Federal Income Taxes (ADFIT)
+
+
+Prior TDU Delivery Charges:
+
+                                                                             TDU Delivery Charges  (Total Per Month & Total Per kWh by TDU)
+                                                                                                                                           TEXAS -         LUBBOCK
+TDU Delivery Charges:                                            ONCOR          CENTERPOINT           AEP TEXAS        AEP TEXAS             NEW         POWER AND
+Updated September 29, 2026                                                          ENERGY            CENTRAL1            NORTH            MEXICO
+                                                                                                                                           POWER             LIGHT
+                                                                 TDU Delivery Charges Per Month:
+Customer Charge                                                    $1.48              $2.11               $1.27            $1.27             $1.70            $0.00
+Metering Charge                                                    $2.58              $2.79               $1.97            $1.97             $5.86            $0.00
+                       Total TDU Charges Per Month:               $4.06               $4.90              $3.24             $3.24            $7.56             $0.00
+                                                                  TDU Delivery Charges Per kWh
+Interim Surcharge (IS)                                           0.36330¢             0.00¢               0.00¢            0.00¢             0.00¢            0.00¢
+Distribution System Charge                                       3.60430¢           2.32400¢           3.29660¢          3.29660¢         4.60200¢          5.62800¢
+Franchise Fee                                                      0.00¢              0.00¢               0.00¢            0.00¢             0.00¢          0.51700¢
+Nuclear Decommissioning Fee                                        0.00¢            0.00130¢              0.00¢            0.00¢             0.00¢            0.00¢
+Transmission Cost Recovery Factor (TCRF)                         1.90460¢           3.08120¢           1.71940¢          1.71940¢         2.89860¢            0.00¢
+Distribution Cost Recovery Factory (DCRF)                          0.00¢            0.49340¢           0.36600¢          0.36600¢         0.00000¢            0.00¢
+Temporary Emergency Electric Energy Facilities
+(TEEEF)                                                            0.00¢            0.07420¢           0.08300¢          0.08300¢            0.00¢            0.00¢
+Transition Charge                                                  0.00¢              0.00¢               0.00¢            0.00¢             0.00¢          0.16700¢
+Transition Charge (TC5)                                            0.00¢            -0.02780¢             0.00¢            0.00¢             0.00¢            0.00¢
+Rate Case Expense (RCE)                                          0.00860¢           0.00480¢              0.00¢            0.00¢             0.02¢            0.00¢
+System Restoration Charge (SRC) II                                 0.00¢            0.06360¢           0.12170¢            0.00¢             0.00¢            0.00¢
+Adjusted Federal Income Tax Credit (ADFIT) II                      0.00¢            -0.00230¢          -0.00700¢           0.00¢             0.00¢            0.00¢
+System Restoration Charge (SRC) III                                0.00¢            0.28480¢              0.00¢            0.00¢             0.00¢            0.00¢
+Adjusted Federal Income Tax Credit (ADFIT) III                     0.00¢            -0.04180¢             0.00¢            0.00¢             0.00¢            0.00¢
+Energy Efficiency Cost Recovery Factor (EECRF)                   0.14870¢           0.15760¢           0.11010¢          0.11010¢         0.16420¢            0.00¢
+Hurricane Cost Recovery Factor (HCRF)                              0.00¢              0.00¢               0.00¢            0.00¢          0.08820¢            0.00¢
+                          Total TDU Charges Per kWh:             6.02950¢           6.41300¢           5.68980¢          5.57510¢         7.77100¢          6.31200¢
+Note(s):
+1 McAllen and Mission service area customers formerly served by Oncor will not be subject to the following AEP Central TDU Surcharges:  Transition Charges 2 & 3, Nuclear
+Decommissioning Fee, System Restoration Charge and associate Accumulated Deferred Federal Income Taxes (ADFIT)

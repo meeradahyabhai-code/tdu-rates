@@ -1,11 +1,8 @@
-"""Pull Texas TDU residential delivery rates from the PUCT and keep tdsp_charges.csv current.
+"""Pull Texas residential TDU rates from PUCT and TXU and keep the CSV current.
 
-Two independent sources, both from puc.texas.gov, and they must agree:
-  1. the monthly rate-report PDF each TDU files (authoritative, carries the effective date)
-  2. the HTML table on /industry/electric/rates/tdr/ (cross-check)
-
-If they disagree, or a published average-bill figure doesn't reconcile, this exits
-non-zero and writes nothing. A wrong delivery rate is worse than a stale one.
+Latest effective date wins; no source outranks another. Same-date disagreement
+fails closed. PUCT reports are checked against its HTML page and average bills.
+If TXU is unreachable, report the fallback and continue with PUCT alone.
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import date, timedelta
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -24,6 +22,7 @@ from pypdf import PdfReader
 
 PAGE_URL = "https://www.puc.texas.gov/industry/electric/rates/tdr/"
 FTP_BASE = "https://ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/"
+TXU_PAGE_URL = "https://www.txu.com/help/billing-payments/tdu-charges"
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) tdsp-rates/1.0"}
 
 # CSV utility code -> (PDF file stem, label on the PUCT html table)
@@ -35,6 +34,14 @@ UTILITIES = {
     "TNMP": ("TNMP", "Texas-New Mexico Power"),
 }
 
+TXU_HEADERS = (
+    ("ONCOR", "ONCOR"),
+    ("CNP", "CENTERPOINT ENERGY"),
+    ("AEPCC", "AEP TEXAS CENTRAL"),
+    ("AEPNC", "AEP TEXAS NORTH"),
+    ("TNMP", "TEXAS - NEW MEXICO POWER"),
+    ("LUBBOCK", "LUBBOCK POWER AND LIGHT"),
+)
 
 
 @dataclass
@@ -219,18 +226,17 @@ def parse_html() -> tuple[dict[str, dict[str, float]], date | None]:
 
 
 def fetch_all(strict: bool = True) -> list[Rate]:
+    # `strict` is retained for CLI/API compatibility; conflicts always fail closed.
     html, html_eff = parse_html()
     rates, problems = [], []
     for code in UTILITIES:
         r = parse_pdf(code)
         h = html[code]
 
-        if abs(h["monthly"] - r.monthly) > 0.005:
-            problems.append(f"{code}: monthly PDF ${r.monthly} vs page ${h['monthly']}")
-        if abs(h["per_kwh"] - r.per_kwh) > 1e-6:
-            problems.append(f"{code}: per-kWh PDF {r.per_kwh} vs page {h['per_kwh']}")
-        if html_eff and html_eff != r.effective:
-            problems.append(f"{code}: effective PDF {r.effective} vs page {html_eff}")
+        if html_eff is None or html_eff == r.effective:
+            if not _same_charges(h["monthly"], h["per_kwh"], r):
+                problems.append(f"{code}: same-date/undated PUCT page disagrees with PDF: "
+                                f"${h['monthly']}/{h['per_kwh']} vs ${r.monthly}/{r.per_kwh}")
         # PUCT's own average bill must reconcile with the charges it publishes,
         # allowing for a volumetric printed at low precision (AEP does this).
         if abs(r.monthly + 1000 * r.per_kwh - r.bill_1000) > 0.505:
@@ -238,12 +244,187 @@ def fetch_all(strict: bool = True) -> list[Rate]:
                 f"{code}: ${r.bill_1000} avg bill doesn't reconcile with "
                 f"${r.monthly} + 1000 x {r.per_kwh}")
         rates.append(r)
+        if html_eff is not None:
+            if abs(h["monthly"] + 1000 * h["per_kwh"] - h["bill_1000"]) > 0.505:
+                problems.append(f"{code}: PUCT page average bill doesn't reconcile")
+            # Retain both dates until merge_sources has checked all conflicts.
+            rates.append(Rate(code, h["monthly"], h["per_kwh"], html_eff,
+                              h["bill_1000"], PAGE_URL))
 
-    if problems and strict:
+    if problems:
         raise SystemExit("SOURCE DISAGREEMENT, refusing to write:\n  " + "\n  ".join(problems))
-    for p in problems:
-        print(f"WARN {p}", file=sys.stderr)
     return rates
+
+
+# --- TXU charge sheet --------------------------------------------------
+
+def _txu_pdf_url(page_html: str) -> str:
+    soup = BeautifulSoup(page_html, "html.parser")
+    hrefs = [a.get("href") for a in soup.find_all("a")
+             if a.get("href") and "_RES_WEB_" in a.get("href").upper()
+             and a.get("href").lower().split("?")[0].endswith(".pdf")]
+    if len(hrefs) != 1:
+        raise ValueError(f"TXU page: expected exactly one residential PDF link, found {len(hrefs)}")
+    return urljoin(TXU_PAGE_URL, hrefs[0])
+
+
+def _txu_header_names(text: str) -> list[str]:
+    """Rebuild the six wrapped utility names using layout-mode column offsets."""
+    title = re.search(r"^.*TDU Delivery Charges\s+\(Total Per Month & Total Per kWh by TDU\).*$",
+                      text, re.I | re.M)
+    ruler = re.search(r"^.*Total\s+TDU\s+Charges\s+Per\s+Month\s*:.*$", text, re.I | re.M)
+    if not title or not ruler or ruler.start() <= title.end():
+        raise ValueError("TXU table header: could not find title and column ruler")
+
+    dollar_x = [ruler.start() - text.rfind("\n", 0, ruler.start()) - 1 + m.start()
+                for m in re.finditer(r"\$\d[\d,]*\.\d+", ruler.group(0))]
+    if len(dollar_x) != len(TXU_HEADERS):
+        raise ValueError(f"TXU table header: expected 6 columns in ruler, got {len(dollar_x)}")
+
+    after_title = text.find("\n", title.end())
+    ends = [m.start() for pattern in (r"^Customer\s+Charge", r"^\s*TDU Delivery Charges Per Month:")
+            if (m := re.search(pattern, text[after_title + 1:ruler.start()], re.I | re.M))]
+    if not ends:
+        raise ValueError("TXU table header: could not isolate header before value rows")
+    header = text[after_title + 1:after_title + 1 + min(ends)]
+
+    # The dollar sign is near the centre of each numeric cell, not its left edge.
+    # Extrapolate the first edge by half the distance to the next column.
+    first_edge = dollar_x[0] - (dollar_x[1] - dollar_x[0]) // 2
+    boundaries = [first_edge] + [(a + b) // 2 for a, b in zip(dollar_x, dollar_x[1:])] + [10**9]
+    columns: list[list[str]] = [[] for _ in TXU_HEADERS]
+    for line in header.splitlines():
+        for chunk in re.finditer(r"\S(?:.*?\S)?(?=\s{2,}|$)", line):
+            if chunk.start() < boundaries[0]:
+                continue
+            overlaps = [max(0, min(chunk.end(), boundaries[i + 1])
+                                - max(chunk.start(), boundaries[i]))
+                        for i in range(len(TXU_HEADERS))]
+            if max(overlaps):
+                columns[overlaps.index(max(overlaps))].append(chunk.group())
+
+    names = []
+    for chunks in columns:
+        name = re.sub(r"\s+", " ", " ".join(chunks).upper()).strip()
+        name = re.sub(r"(?<=[A-Z])\d+(?:\s*,\s*\d+)*$", "", name).strip()
+        names.append(name)
+    return names
+
+
+def _txu_header_order(text: str) -> list[str]:
+    """Read and strictly validate utility names, never a fixed column index."""
+    names = _txu_header_names(text)
+    labels = [label for _, label in TXU_HEADERS]
+    if names != labels:
+        if sorted(names) == sorted(labels):
+            raise ValueError(f"TXU table header: unexpected utility order {names!r}")
+        missing = next((label for label in labels if label not in names), None)
+        if missing:
+            raise ValueError(f"TXU table header: expected utility {missing!r}")
+        raise ValueError(f"TXU table header: unexpected utility sequence {names!r}")
+    return [code for code, _ in TXU_HEADERS]
+
+
+def _txu_row(text: str, label: str, count: int) -> list[float]:
+    matches = re.findall(r"^[ \t]*" + label + r"[ \t]*:([^\n]+)", text, re.I | re.M)
+    if len(matches) != 1:
+        raise ValueError(f"TXU table: expected exactly one {label!r} row, got {len(matches)}")
+    vals = [float(v.replace(",", "")) for v in re.findall(r"-?\d[\d,]*\.\d+", matches[0])]
+    if len(vals) != count:
+        raise ValueError(f"TXU table: expected {count} values on {label!r}, got {vals}")
+    return vals
+
+
+def parse_txu_text(text: str, source: str = "TXU residential charge sheet") -> list[Rate]:
+    """Parse and validate EVERY dated table in layout-mode PDF text."""
+    from datetime import datetime
+    titles = list(re.finditer(
+        r"^.*TDU Delivery Charges\s+\(Total Per Month & Total Per kWh by TDU\).*$",
+        text, re.I | re.M))
+    date_pattern = r"Updated\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})"
+    marks = list(re.finditer(date_pattern, text, re.I))
+    if not marks:
+        raise ValueError("TXU sheet: no Updated date found")
+    if len(titles) != len(marks) or marks[0].start() < titles[0].start():
+        raise ValueError("TXU sheet: expected one dated table per title; layout changed")
+    rates = []
+    for i, title in enumerate(titles):
+        end = titles[i + 1].start() if i + 1 < len(titles) else len(text)
+        table = text[title.start():end]
+        dates = re.findall(date_pattern, table, re.I)
+        if len(dates) != 1:
+            raise ValueError("TXU table: expected exactly one Updated date")
+        eff = datetime.strptime(re.sub(r"\s+", " ", dates[0]).title(), "%B %d, %Y").date()
+        order = _txu_header_order(table)
+        monthly = _txu_row(table, r"Total\s+TDU\s+Charges\s+Per\s+Month", len(order))
+        cents = _txu_row(table, r"Total\s+TDU\s+Charges\s+Per\s+kWh", len(order))
+        rates.extend(Rate(code, round(monthly[j], 2), round(cents[j] / 100, 8), eff,
+                          round(monthly[j] + 10 * cents[j], 2), source)
+                     for j, code in enumerate(order))
+    return rates
+
+
+def fetch_txu() -> list[Rate]:
+    page = _get(TXU_PAGE_URL).text
+    pdf_url = _txu_pdf_url(page)
+    reader = PdfReader(io.BytesIO(_get(pdf_url).content))
+    # Layout mode keeps each table row together, which lets the parser verify that
+    # exactly six values follow each total instead of borrowing from a later row.
+    text = "\n".join(page.extract_text(extraction_mode="layout") or ""
+                     for page in reader.pages)
+    return parse_txu_text(text, pdf_url)
+
+
+def merge_sources(puct: list[Rate], txu: list[Rate]) -> tuple[list[Rate], list[str]]:
+    """Check all dates for conflicts, then select the newest rate per utility."""
+    dated, origins = {}, {}
+    for origin, candidates in (("PUCT", puct), ("TXU", txu)):
+        for r in candidates:
+            key = (r.utility, r.effective)
+            previous = dated.get(key)
+            if previous and not _same_charges(previous.monthly, previous.per_kwh, r):
+                raise SystemExit(
+                    f"SOURCE CONFLICT for {r.utility} on {_s(r.effective)}: "
+                    f"{' + '.join(sorted(origins[key]))} ${previous.monthly:.2f}/{previous.per_kwh:.8f} vs "
+                    f"{origin} ${r.monthly:.2f}/{r.per_kwh:.8f}; refusing to write")
+            dated.setdefault(key, r)
+            origins.setdefault(key, set()).add(origin)
+    newest = {}
+    for r in dated.values():
+        if r.utility not in newest or r.effective > newest[r.utility].effective:
+            newest[r.utility] = r
+    accepted = list(newest.values())
+    agreements = [r.utility for r in accepted if len(origins[(r.utility, r.effective)]) > 1]
+    return accepted, agreements
+
+
+def _same_charges(monthly: float, per_kwh: float, rate: Rate) -> bool:
+    return abs(monthly - rate.monthly) < 0.005 and abs(per_kwh - rate.per_kwh) < 1e-9
+
+
+def validate_txu_sanity(rates: list[Rate], rows: list[dict]) -> None:
+    """Require at least one exact match to a rate already stored in the CSV."""
+    for effective in {r.effective for r in rates}:
+        table = [r for r in rates if r.effective == effective]
+        if not any(row["utility"] == r.utility
+                   and _same_charges(float(row["monthly"]), float(row["perKwh"]), r)
+                   for r in table for row in rows):
+            raise SystemExit(f"TXU SANITY CHECK FAILED on {_s(effective)}: "
+                             "no utility matches any rate on file; refusing to write")
+
+
+def validate_csv_sources(rates: list[Rate], rows: list[dict]) -> None:
+    """A newer candidate must not hide a same-date conflict with stored history."""
+    for r in rates:
+        for row in rows:
+            if (row["utility"] == r.utility and row["startDate"]
+                    and _d(row["startDate"]) == r.effective
+                    and not _same_charges(float(row["monthly"]), float(row["perKwh"]), r)):
+                raise SystemExit(
+                    f"SOURCE CONFLICT for {r.utility} on {_s(r.effective)}: "
+                    f"CSV ${row['monthly']}/{row['perKwh']} vs {r.source} "
+                    f"${r.monthly:.2f}/{r.per_kwh:.8f}; refusing to rewrite history")
+
 
 
 # --- CSV ----------------------------------------------------------------
@@ -323,16 +504,17 @@ def _coverage_failure(rows: list[dict], today: date) -> SystemExit | None:
     return SystemExit(
         "UNCOVERED TDU RATE(S), refusing to write:\n  "
         + "\n  ".join(details)
-        + "\nThe rate could not be extended or appended from the PUCT report; "
+        + "\nThe rate could not be extended or appended from PUCT or TXU; "
         "a human has to look.")
 
 
-def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6):
+def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 8):
     """Rows to close, append, or extend without duplicating an unchanged rate."""
     closes, adds, unchanged, ahead, extends = [], [], [], [], []
     for r in rates:
         cur = latest(rows, r.utility)
-        new_kwh = f"{r.per_kwh:.{per_kwh_decimals}f}".rstrip("0")
+        new_kwh = f"{r.per_kwh:.{max(6, per_kwh_decimals)}f}".rstrip("0")
+        new_kwh = new_kwh.ljust(new_kwh.index(".") + 7, "0")
         new_monthly = f"{r.monthly:.2f}"
         if cur and _d(cur["startDate"]) > r.effective:
             ahead.append((r, cur))
@@ -347,8 +529,9 @@ def plan_updates(rows: list[dict], rates: list[Rate], per_kwh_decimals: int = 6)
             continue
         if cur and _d(cur["startDate"]) == r.effective:
             raise SystemExit(
-                f"{r.utility}: existing row starts {cur['startDate']} but the PUCT "
-                f"report is effective {_s(r.effective)}. Refusing to rewrite history.")
+                f"SOURCE CONFLICT for {r.utility}: existing row starts {cur['startDate']} "
+                f"but {r.source!r} has different rates on {_s(r.effective)}. "
+                "Refusing to rewrite history.")
         if cur:
             closes.append((cur, _s(r.effective - timedelta(days=1))))
         adds.append({
@@ -394,13 +577,31 @@ def main(argv: list[str]) -> int:
     p.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     p.add_argument("--today", help="MM/DD/YYYY, for coverage testing")
     p.add_argument("--no-strict", action="store_true",
-                   help="warn instead of failing when the two PUCT sources disagree")
+                   help="deprecated compatibility flag; conflicts still fail closed")
     a = p.parse_args(argv)
 
     today = _d(a.today) if a.today else date.today()
 
-    rates = fetch_all(strict=not a.no_strict)
-    print(f"PUCT residential TDU rates, effective {_s(rates[0].effective)}\n")
+    puct = fetch_all(strict=not a.no_strict)
+    txu = []
+    try:
+        txu = fetch_txu()
+    except requests.RequestException as exc:
+        print(f"WARN TXU unreachable; falling back to PUCT alone: {exc}")
+
+    # Conflict checking precedes newest-date selection, including older TXU tables.
+    rates, agreements = merge_sources(puct, txu)
+    rows = read_csv(a.csv) if a.csv else []
+    validate_csv_sources(puct + txu, rows)
+    if txu and rows:
+        validate_txu_sanity(txu, rows)
+
+    def origin(r):
+        if r.utility in agreements:
+            return "PUCT + TXU"
+        return "TXU" if r in txu else "PUCT"
+
+    print("Residential TDU rates (PUCT + TXU; latest effective date wins)\n")
     for r in rates:
         note = ""
         # the average bill is published to the cent, so 1e-5 of slack is rounding,
@@ -408,30 +609,32 @@ def main(argv: list[str]) -> int:
         if abs(r.derived_per_kwh - r.per_kwh) > 1.1e-5:
             note = (f"   (published volumetric is rounded; the ${r.bill_1000} average bill "
                     f"implies {r.derived_per_kwh})")
-        print(f"  {r.utility:6} monthly ${r.monthly:>5.2f}   perKwh {r.per_kwh:.6f}{note}")
+        print(f"  {r.utility:7} monthly ${r.monthly:>5.2f}   perKwh {r.per_kwh:.8f}  "
+              f"effective {_s(r.effective)}  [{origin(r)}]{note}")
 
     if not a.csv:
         return 0
 
-    rows = read_csv(a.csv)
     closes, adds, unchanged, ahead, extends = plan_updates(rows, rates)
     print()
     for r, cur in unchanged:
-        print(f"  = {r.utility:6} unchanged ({cur['startDate']}-{cur['endDate']})")
+        print(f"  = {r.utility:6} unchanged ({cur['startDate']}-{cur['endDate']}; {origin(r)})")
     for r, cur in ahead:
         print(f"  ! {r.utility:6} ahead: kept ours {cur['startDate']} monthly "
               f"${float(cur['monthly']):.2f} perKwh {float(cur['perKwh']):.6f}; "
               f"report says {_s(r.effective)} monthly ${r.monthly:.2f} "
-              f"perKwh {r.per_kwh:.6f}")
+              f"perKwh {r.per_kwh:.8f} [{origin(r)}]")
     for cur, end in closes:
         print(f"  ~ close  {cur['utility']:6} {cur['startDate']}-{cur['endDate']} "
               f"-> endDate {end}  (was perKwh {cur['perKwh']})")
     for cur, end in extends:
+        rate = next(r for r in rates if r.utility == cur["utility"])
         print(f"  > extend {cur['utility']:6} {cur['startDate']}-{cur['endDate']} "
-              f"-> endDate {end}  (rate unchanged at {float(cur['perKwh']):.6f})")
+              f"-> endDate {end}  (rate unchanged at {float(cur['perKwh']):.6f}) [{origin(rate)}]")
     for row in adds:
+        rate = next(r for r in rates if r.utility == row["utility"])
         print(f"  + add    {row['utility']:6} {row['monthly']} {row['perKwh']} "
-              f"{row['startDate']}-{row['endDate']}")
+              f"{row['startDate']}-{row['endDate']} [{origin(rate)}]")
 
     failure = _coverage_failure(projected(rows, closes, adds, extends), today)
     if failure:
@@ -457,4 +660,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except (requests.RequestException, ValueError) as exc:
+        print(f"SOURCE ERROR, refusing to write: {exc}", file=sys.stderr)
+        raise SystemExit(1)

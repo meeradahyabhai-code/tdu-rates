@@ -1,6 +1,6 @@
 # tdu-rates
 
-One canonical copy of the Texas TDU delivery charges, refreshed from the PUCT on a
+One canonical copy of the Texas TDU delivery charges, refreshed from PUCT and TXU on a
 schedule, with a push to everything that consumes it. Replaces retyping rates off a
 web page into a CSV once a month and hoping every project got the same numbers.
 
@@ -13,9 +13,9 @@ web page into a CSV once a month and hoping every project got the same numbers.
 ## Flow
 
 ```
-PUCT rate reports (PDF) ─┐
-                         ├─ puc_tdu.py, cross-checks both ─→ data/tdsp_charges.csv
-PUCT rates page (HTML) ──┘                                          │
+PUCT reports + HTML ─────┐
+                         ├─ puc_tdu.py, latest date wins ─→ data/tdsp_charges.csv
+TXU charge sheet (PDF) ──┘                                          │
                                                                     │ commit
                                                      ┌──────────────┴──────────────┐
                                                      │  daily GitHub Actions job   │
@@ -38,7 +38,7 @@ protects that is upstream of the commit, in the cross-checks below.
 python3 puc_tdu.py data/tdsp_charges.csv           # dry run, prints the plan
 python3 puc_tdu.py data/tdsp_charges.csv --apply   # writes
 python3 scripts/emit_json.py                       # rebuild data/tdu-rates.json
-python3 test_puc_tdu.py                            # 16 offline tests, no network
+python3 test_puc_tdu.py                            # offline tests, no network
 ```
 
 Exit codes: `0` nothing to do or applied, `2` changes pending in a dry run, `1` a
@@ -53,9 +53,10 @@ rows, all five TDUs present, never shorter than the file it's replacing. Then it
 commits straight to main, which is what makes the new rate deploy on its own, and
 re-reads main afterwards to confirm the file actually landed.
 
-There is no review step, by choice. The gate is the cross-checking here: two
-independent PUCT sources that must agree, reconciled against PUCT's own published
-average bill, and nothing gets written when they don't. The realistic failure mode
+There is no review step, by choice. The gate is the cross-checking here: PUCT and
+TXU must agree for the same effective date, and PUCT's charges must reconcile with
+its own published average bill. Different dates are normal; the latest wins.
+Nothing gets written on a same-date conflict. The realistic failure mode
 without this job isn't a wrong rate, it's a stale one, which is what four months of
 hand-updating produced.
 
@@ -76,12 +77,20 @@ consumers' daily cron still keeps everything in sync within a day.
 
 ## Where the numbers come from
 
-Two independent PUCT sources, cross-checked against each other on every run:
+The daily job reads **PUCT AND TXU**. The latest effective date wins per utility;
+no source outranks another. See [SOURCES.md](SOURCES.md) for the contract.
 
 | | |
 |---|---|
 | Rate report PDFs | `ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/{Oncor,CenterPoint,AEP,TNMP}_Rate_Report.pdf` — authoritative, carries the effective date, covers every rate class |
 | Rates page | `puc.texas.gov/industry/electric/rates/tdr/` — residential only, used as a second opinion |
+| TXU charge sheet | `txu.com/help/billing-payments/tdu-charges` — discovers the current residential PDF link on each run; parses every dated table in layout mode |
+
+Every TXU table must have the six expected utility columns and six values per
+total row. Cents are converted to dollars per kWh with at least six decimals.
+Conflicts are checked across all dates before choosing each utility's newest rate.
+TXU connection, timeout, or HTTP failures fall back to PUCT with a visible warning
+in the output and daily summary. Invalid TXU content fails closed.
 
 There is no PUCT API. The only JSON endpoint on the domain is
 `/api/ercot/ercotstatus`, the grid-condition banner, not rates.
@@ -95,28 +104,32 @@ Mapping to the CSV columns:
   rates reset Mar 1 and Sep 1), and the previous row for that utility is closed the
   day before the new one starts
 
-Covers the five Texas TDUs: `ONCOR`, `CNP`, `AEPCC`, `AEPNC`, `TNMP`. The other ~30
-utilities in the file (Ohio, Illinois, Pennsylvania, plus `LUBBOCK`) are not on the
-PUCT page and are never touched.
+Covers `ONCOR`, `CNP`, `AEPCC`, `AEPNC`, and `TNMP` through both sources, plus
+`LUBBOCK` through TXU. The other ~30 utilities (Ohio, Illinois, Pennsylvania) are
+never touched. Bills are never an input.
 
 ## What makes it refuse to write
 
 A stale rate is recoverable; a wrong one silently misprices every bill check. So it
 writes nothing and exits non-zero when:
 
-- the PDF and the web page disagree on a charge or on the effective date
+- sources disagree on charges for the same effective date (different dates are normal)
 - PUCT's own published average 1,000 kWh bill doesn't reconcile with the charges on
   the same report
 - a report's layout changed enough that a row is missing, duplicated, or has the
   wrong number of columns
-- the effective date is on or before a row already in the CSV (that would mean
-  rewriting history, not appending to it)
+- an existing CSV row has different charges for the same effective date
+- no utility in a TXU table matches any rate already on file
+- the proposed CSV would leave any of the five PUCT TDUs uncovered today
 
 The scheduled job additionally re-runs the updater in dry-run mode afterward and
-fails if the CSV still doesn't match the source, so a green run means the work
+fails if the CSV still doesn't match the merged PUCT + TXU result, so a green run means the work
 actually happened rather than merely that a command exited 0.
 
-`--no-strict` downgrades the first check to a warning. Nothing downgrades the rest.
+`--no-strict` is retained as a deprecated compatibility flag; it cannot bypass
+conflicts or validation. Unchanged charges with a newer effective date extend the
+existing row to the season end; changed charges close the old row at newDate−1
+and append a new row. A CSV row newer than the sources is kept and reported.
 
 ## Known quirk: AEP publishes a rounded volumetric
 
