@@ -335,9 +335,12 @@ def _txu_row(text: str, label: str, count: int) -> list[float]:
     return vals
 
 
-def parse_txu_text(text: str, source: str = "TXU residential charge sheet") -> list[Rate]:
-    """Parse and validate EVERY dated table in layout-mode PDF text."""
+def parse_txu_text(text: str, source: str = "TXU residential charge sheet",
+                   today: date | None = None) -> list[Rate]:
+    """Validate every plausibly dated table, warning about far-future dates."""
     from datetime import datetime
+    today = today if today is not None else date.today()
+    latest = today + timedelta(days=120)
     titles = list(re.finditer(
         r"^.*TDU Delivery Charges\s+\(Total Per Month & Total Per kWh by TDU\).*$",
         text, re.I | re.M))
@@ -355,12 +358,19 @@ def parse_txu_text(text: str, source: str = "TXU residential charge sheet") -> l
         if len(dates) != 1:
             raise ValueError("TXU table: expected exactly one Updated date")
         eff = datetime.strptime(re.sub(r"\s+", " ", dates[0]).title(), "%B %d, %Y").date()
+        if eff > latest:
+            print(f"WARN TXU table from {source}: skipping Updated {_s(eff)}; "
+                  f"more than 120 days after today ({_s(today)}), likely a source date typo")
+            continue
         order = _txu_header_order(table)
         monthly = _txu_row(table, r"Total\s+TDU\s+Charges\s+Per\s+Month", len(order))
         cents = _txu_row(table, r"Total\s+TDU\s+Charges\s+Per\s+kWh", len(order))
         rates.extend(Rate(code, round(monthly[j], 2), round(cents[j] / 100, 8), eff,
                           round(monthly[j] + 10 * cents[j], 2), source)
                      for j, code in enumerate(order))
+    if not rates:
+        raise ValueError(f"TXU sheet from {source}: no usable tables; all Updated dates are "
+                         f"more than 120 days after today ({_s(today)}); refusing to use future rates")
     return rates
 
 

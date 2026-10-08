@@ -10,7 +10,7 @@ import io
 import re
 import subprocess
 from contextlib import redirect_stdout
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -496,6 +496,47 @@ def t_txu_october_all_six_values_in_both_tables():
         date(2026, 9, 29): [(4.06, .060295), (4.90, .064130), (3.24, .056898),
                             (3.24, .055751), (7.56, .077710), (0, .063120)],
     })
+
+
+def t_txu_far_future_table_is_skipped_with_warning():
+    text = TXU_OCT_TEXT.replace("Updated September 29, 2026", "Updated September 30, 2029")
+    source = "https://www.txu.com/-/media/corrected_RES_WEB_OCT04_2026.pdf"
+    today = date(2026, 10, 8)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rates = m.parse_txu_text(text, source, today=today)
+    expected = [r for r in m.parse_txu_text(TXU_OCT_TEXT, source, today=today)
+                if r.effective == date(2026, 10, 4)]
+    eq(rates, expected)
+    eq(len(rates), 6)
+    warning = out.getvalue()
+    for fragment in ("WARN", "skipping Updated 09/30/2029", source, "120 days", "10/08/2026"):
+        assert fragment in warning, warning
+
+
+def t_txu_all_future_tables_explain_failure():
+    text = TXU_OCT_TEXT.replace("2026", "2029")
+    source = "https://www.txu.com/-/media/future_RES_WEB.pdf"
+    out = io.StringIO()
+    with redirect_stdout(out):
+        raises(lambda: m.parse_txu_text(text, source, today=date(2026, 10, 8)),
+               f"TXU sheet from {source}: no usable tables; all Updated dates are "
+               "more than 120 days after today (10/08/2026)")
+    eq(out.getvalue().count("WARN TXU table"), 2)
+
+
+def t_txu_future_cutoff_allows_exactly_120_days():
+    effective = date(2026, 10, 4)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rates = m.parse_txu_text(TXU_OCT_TEXT, today=effective - timedelta(days=120))
+    eq(len(rates), 12)
+    eq(out.getvalue(), "")
+    with redirect_stdout(out):
+        rates = m.parse_txu_text(TXU_OCT_TEXT, today=effective - timedelta(days=121))
+    eq(len(rates), 6)
+    eq({r.effective for r in rates}, {date(2026, 9, 29)})
+    assert "skipping Updated 10/04/2026" in out.getvalue()
 
 
 def t_txu_column_swap_is_rejected_including_older_table():
