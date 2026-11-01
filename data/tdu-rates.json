@@ -2,7 +2,7 @@
   "source": "https://www.puc.texas.gov/industry/electric/rates/tdr/",
   "reports": "https://ftp.puc.texas.gov/public/puct-info/industry/electric/rates/tdr/tdu/",
   "coverage": "Texas TDU residential delivery charges only",
-  "csvSha256": "ca87a726ee2b3b4b0124a5dff604a4e64e394b7771443fcb6ca4d3e0e24494e6",
+  "csvSha256": "316323d4b010a3c6c128c4b41b8f6b93c73b7fd12691423c307445276070d12a",
   "utilities": {
     "ONCOR": {
       "name": "Oncor Electric Delivery",
